@@ -22,7 +22,18 @@ F = _safe_import("torch.nn.functional")
 Beta = _safe_import("torch.distributions.Beta")
 Distribution = _safe_import("torch.distributions.Distribution")
 constraints = _safe_import("torch.distributions.constraints")
-validated = _safe_import("gluonts.core.component.validated", pkg_name="gluonts")
+validated = _safe_import(
+    "gluonts.core.component.validated", pkg_name="gluonts", return_object="None"
+)
+if validated is None:
+
+    def validated():
+        def decorator(func):
+            return func
+
+        return decorator
+
+
 DistributionOutput = _safe_import(
     "gluonts.torch.distributions.DistributionOutput", pkg_name="gluonts"
 )
