@@ -137,7 +137,7 @@ class LagLlamaForecaster(BaseForecaster):
         "python_dependencies": [
             "gluonts>=0.14.0",
             "torch",
-            "lightning>=2.0,<2.6",
+            "lightning>=2.0",
             "huggingface-hub",
         ],
         "tests:vm": True,
