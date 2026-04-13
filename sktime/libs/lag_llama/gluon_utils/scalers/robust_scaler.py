@@ -17,16 +17,15 @@ from __future__ import annotations
 from sktime.utils.dependencies import _safe_import
 
 torch = _safe_import("torch")
-validated = _safe_import(
-    "gluonts.core.component.validated", pkg_name="gluonts", return_object="None"
-)
-if validated is None:
 
-    def validated():
-        def decorator(func):
-            return func
 
-        return decorator
+def validated():
+    """Identity decorator replacing gluonts validated to avoid pydantic v2 issues."""
+
+    def decorator(func):
+        return func
+
+    return decorator
 
 
 Scaler = _safe_import("gluonts.torch.scaler.Scaler", pkg_name="gluonts")
