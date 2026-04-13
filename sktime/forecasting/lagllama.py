@@ -6,10 +6,10 @@ __author__ = ["shlok191", "pranavvp16"]
 import pandas as pd
 from skbase.utils.dependencies import _check_soft_dependencies
 
-from sktime.forecasting.base import _BaseGlobalForecaster
+from sktime.forecasting.base import BaseForecaster
 
 
-class LagLlamaForecaster(_BaseGlobalForecaster):
+class LagLlamaForecaster(BaseForecaster):
     """LagLlama Foundation Model for Time Series Forecasting.
 
     LagLlama is a foundation model for univariate probabilistic time series forecasting
@@ -18,17 +18,19 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
 
     The model checkpoint is automatically downloaded on first use if not provided.
 
-    **Fit Strategies: Zero-Shot and Fine-Tuning**
+    **Usage Workflows**
 
-    This model supports two fit strategies via the ``fit_strategy`` parameter:
+    This model supports two main workflows:
 
-    - **zero-shot** (default): Uses pretrained model as-is without training.
+    - **Zero-shot** (default): Uses pretrained model as-is without training.
       Fast inference with no training overhead. Suitable for quick predictions.
+      Simply call ``fit(y)`` then ``predict()``.
 
-    - **finetuning**: Fine-tunes all model parameters on the provided data.
-      Takes longer but may improve accuracy on specific datasets.
+    - **Fine-tuning via pretrain()**: Fine-tune the model on panel/hierarchical data
+      using the ``pretrain()`` method, then call ``fit(y)`` on a specific series
+      to set context for prediction. This is the recommended workflow for
+      domain-specific fine-tuning.
       Controlled by ``trainer_kwargs``, ``lr``, and ``aug_prob`` parameters.
-      Supports validation split for all data types including hierarchical data.
 
     Parameters
     ----------
@@ -51,6 +53,16 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         If True, ensures all predicted samples are passed through ReLU.
     use_source_package : bool, optional (default=False)
         If True, uses the external lag-llama package instead of vendored version.
+    validation_split : float, optional (default=0.2)
+        Fraction of data for validation during pretrain().
+        Set to None to skip validation.
+    trainer_kwargs : dict, optional (default=None)
+        Arguments passed to PyTorch Lightning Trainer during pretrain()
+        (e.g., ``{"max_epochs": 10}``). If None, defaults to ``{"max_epochs": 50}``.
+    lr : float, optional (default=5e-4)
+        Learning rate for fine-tuning during pretrain().
+    aug_prob : float, optional (default=0.0)
+        Data augmentation probability during pretrain().
 
     Examples
     --------
@@ -72,20 +84,30 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
     >>> # 90% prediction intervals
     >>> y_interval = forecaster.predict_interval(coverage=0.9)  # doctest: +SKIP
 
-    **Fine-tuning on custom data**
+    **Fine-tuning with pretrain() on panel data**
 
     >>> from sktime.forecasting.lagllama import LagLlamaForecaster  # doctest: +SKIP
     >>> from sktime.datasets import load_airline  # doctest: +SKIP
+    >>> from sktime.utils._testing.hierarchical import (  # doctest: +SKIP
+    ...     _make_hierarchical,
+    ... )
     >>>
-    >>> y = load_airline()  # doctest: +SKIP
+    >>> # Create panel data for pretraining
+    >>> y_panel = _make_hierarchical(  # doctest: +SKIP
+    ...     hierarchy_levels=(3,), min_timepoints=50, max_timepoints=50
+    ... )
+    >>> # Fine-tune on panel data
     >>> forecaster = LagLlamaForecaster(  # doctest: +SKIP
-    ...     fit_strategy="finetuning",
     ...     context_length=32,
     ...     num_samples=100,
-    ...     trainer_kwargs={"max_epochs": 10},
+    ...     trainer_kwargs={"max_epochs": 5},
     ...     lr=5e-4,
     ...     validation_split=0.2
     ... )
+    >>> forecaster.pretrain(y_panel)  # Fine-tune on panel  # doctest: +SKIP
+    LagLlamaForecaster(...)
+    >>> # Now fit to specific series and predict
+    >>> y = load_airline()  # doctest: +SKIP
     >>> forecaster.fit(y, fh=[1, 2, 3, 4, 5, 6])  # doctest: +SKIP
     LagLlamaForecaster(...)
     >>> y_pred = forecaster.predict()  # doctest: +SKIP
@@ -99,7 +121,6 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
 
     _tags = {
         "y_inner_mtype": ["pd.DataFrame", "pd-multiindex", "pd_multiindex_hier"],
-        "scitype:y": "univariate",  # LagLlama is univariate only
         "capability:exogenous": False,
         "capability:multivariate": False,  # LagLlama is univariate only
         "requires-fh-in-fit": True,
@@ -107,7 +128,7 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         "enforce_index_type": None,
         "capability:missing_values": False,
         "capability:insample": False,
-        "capability:global_forecasting": True,
+        "capability:pretrain": True,
         "capability:pred_int": True,
         "capability:pred_int:insample": False,
         "authors": ["shlok191"],
@@ -132,7 +153,6 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         use_rope_scaling=False,
         nonnegative_pred_samples=False,
         use_source_package=False,
-        fit_strategy="zero-shot",
         validation_split=0.2,
         trainer_kwargs=None,
         lr=5e-4,
@@ -161,24 +181,17 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
             If True, ensures all predicted samples are passed through ReLU.
         use_source_package : bool, optional (default=False)
             If True, uses the external lag-llama package instead of vendored version.
-        fit_strategy : str, optional (default="zero-shot")
-            Strategy to use for fitting the model. One of:
-            - "zero-shot": Use pretrained model as-is without training
-            - "finetuning": Fine-tune all model parameters on the provided data
         validation_split : float, optional (default=0.2)
-            Fraction of data to use for validation during fine-tuning.
-            Only used when fit_strategy="finetuning". Set to None to skip validation.
+            Fraction of training data to use for validation during pretrain().
+            Set to None to skip validation.
         trainer_kwargs : dict, optional (default=None)
-            Additional arguments for PyTorch Lightning Trainer during fine-tuning.
-            Only used when fit_strategy="finetuning".
+            Additional arguments for PyTorch Lightning Trainer during pretrain().
             If None, defaults to {"max_epochs": 50}.
             Common options: "max_epochs", "devices", "accelerator", etc.
         lr : float, optional (default=5e-4)
-            Learning rate for fine-tuning.
-            Only used when fit_strategy="finetuning".
+            Learning rate for fine-tuning during pretrain().
         aug_prob : float, optional (default=0.0)
-            Probability of applying data augmentation during training.
-            Only used when fit_strategy="finetuning".
+            Probability of applying data augmentation during pretrain().
         """
         # Initialize parent class
         super().__init__()
@@ -194,7 +207,6 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         self.use_rope_scaling = use_rope_scaling
         self.nonnegative_pred_samples = nonnegative_pred_samples
         self.use_source_package = use_source_package
-        self.fit_strategy = fit_strategy
         self.validation_split = validation_split
         self.trainer_kwargs = trainer_kwargs
         self._trainer_kwargs = (
@@ -203,18 +215,21 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         self.lr = lr
         self.aug_prob = aug_prob
 
-        # Validate fit_strategy
-        if self.fit_strategy not in ["zero-shot", "finetuning"]:
-            raise ValueError(
-                f"fit_strategy must be 'zero-shot' or 'finetuning', "
-                f"got '{self.fit_strategy}'"
-            )
-
         # Set device (lazy - actual device object created when needed)
         if device is None:
             self.device_ = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device_ = torch.device(device)
+
+        # On Apple Silicon, PyTorch Lightning auto-selects MPS but not all ops are
+        # supported (e.g. aten::nanmedian). Force CPU accelerator in that case.
+        _mps_available = (
+            not torch.cuda.is_available()
+            and hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        )
+        if _mps_available and "accelerator" not in self._trainer_kwargs:
+            self._trainer_kwargs["accelerator"] = "cpu"
 
     def _ensure_checkpoint(self):
         """Download checkpoint from HuggingFace if not found locally.
@@ -337,6 +352,16 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
             y_train, y_val = temporal_train_test_split(
                 _y, test_size=self.validation_split
             )
+            # Skip validation if it has fewer than 3 timepoints - pd.infer_freq
+            # requires at least 3 dates and GluonTS cannot create a valid dataset.
+            val_time_index = (
+                y_val.index.get_level_values(-1).unique()
+                if isinstance(y_val.index, pd.MultiIndex)
+                else y_val.index
+            )
+            if len(val_time_index) < 3:
+                training_data = self._get_gluonts_dataset(_y)
+                return training_data, None
             training_data = self._get_gluonts_dataset(y_train)
             validation_data = self._get_gluonts_dataset(y_val)
             return training_data, validation_data
@@ -344,12 +369,149 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
             training_data = self._get_gluonts_dataset(_y)
             return training_data, None
 
+    def _pretrain(self, y, X=None, fh=None):
+        """Pretrain LagLlama on panel data.
+
+        Fine-tunes the LagLlama model on panel (multi-series) data.
+        After pretraining, call fit() to set context for a specific series.
+
+        Parameters
+        ----------
+        y : pd.DataFrame with MultiIndex
+            Panel or hierarchical time series data for training.
+            Index should have (instance, timepoint) structure.
+        X : pd.DataFrame, optional (default=None)
+            Exogenous data (ignored by LagLlama).
+        fh : ForecastingHorizon, optional (default=None)
+            Forecasting horizon for setting prediction_length.
+
+        Returns
+        -------
+        self : reference to self
+        """
+        _check_soft_dependencies("torch", severity="error")
+        import torch
+
+        # Import LagLlama estimator
+        if self.use_source_package:
+            if _check_soft_dependencies("lag-llama", severity="warning"):
+                from lag_llama.gluon.estimator import LagLlamaEstimator
+            else:
+                from sktime.libs.lag_llama.gluon.estimator import LagLlamaEstimator
+        else:
+            from sktime.libs.lag_llama.gluon.estimator import LagLlamaEstimator
+
+        # Get or download checkpoint
+        ckpt_path = self._ensure_checkpoint()
+
+        # Load checkpoint with PyTorch 2.6+ compatibility
+        ckpt = torch.load(ckpt_path, map_location=self.device_, weights_only=False)
+        estimator_args = ckpt["hyper_parameters"]["model_kwargs"]
+
+        # Determine prediction_length from fh if provided.
+        # When fh is None (e.g. incremental pretrain via _pretrain_update),
+        # reuse the length from the initial pretrain call so GluonTS uses the
+        # same window size and doesn't require more future points than the data has.
+        if fh is not None:
+            if hasattr(fh, "to_relative") and self._cutoff is not None:
+                prediction_length = int(max(fh.to_relative(self._cutoff)))
+            else:
+                prediction_length = int(max(fh))
+        else:
+            prediction_length = getattr(self, "_pretrain_prediction_length_", 24)
+        self._pretrain_prediction_length_ = prediction_length
+
+        # Setup RoPE scaling if requested
+        rope_scaling_arguments = None
+        if self.use_rope_scaling:
+            rope_scaling_arguments = {
+                "type": "linear",
+                "factor": max(
+                    1.0,
+                    (self.context_length + prediction_length)
+                    / estimator_args["context_length"],
+                ),
+            }
+
+        # Create LagLlama estimator
+        self.estimator_ = LagLlamaEstimator(
+            ckpt_path=ckpt_path,
+            prediction_length=prediction_length,
+            context_length=self.context_length,
+            input_size=estimator_args["input_size"],
+            n_layer=estimator_args["n_layer"],
+            n_embd_per_head=estimator_args["n_embd_per_head"],
+            n_head=estimator_args["n_head"],
+            scaling=estimator_args["scaling"],
+            time_feat=estimator_args["time_feat"],
+            rope_scaling=rope_scaling_arguments,
+            batch_size=self.batch_size,
+            num_parallel_samples=self.num_samples,
+            device=self.device_,
+            lr=self.lr,
+            aug_prob=self.aug_prob,
+            trainer_kwargs=self._trainer_kwargs,
+            nonnegative_pred_samples=self.nonnegative_pred_samples,
+        )
+
+        # Prepare training data
+        training_data, validation_data = self._prepare_training_data(y, fh)
+
+        # Create predictor with PyTorch 2.6+ compatibility patch
+        original_load = torch.load
+
+        def patched_load(*args, **kwargs):
+            kwargs["weights_only"] = False
+            return original_load(*args, **kwargs)
+
+        torch.load = patched_load
+        try:
+            # Train and get predictor
+            if validation_data is not None:
+                self.predictor_ = self.estimator_.train(
+                    training_data=training_data,
+                    validation_data=validation_data,
+                    cache_data=True,
+                    shuffle_buffer_length=1000,
+                )
+            else:
+                self.predictor_ = self.estimator_.train(
+                    training_data=training_data,
+                    cache_data=True,
+                    shuffle_buffer_length=1000,
+                )
+        finally:
+            torch.load = original_load
+
+        return self
+
+    def _pretrain_update(self, y, X=None, fh=None):
+        """Incrementally update pretraining with additional data.
+
+        For LagLlama, this re-runs pretraining with the new data.
+        True incremental learning is not supported.
+
+        Parameters
+        ----------
+        y : pd.DataFrame with MultiIndex
+            Additional panel data for training.
+        X : pd.DataFrame, optional (default=None)
+            Exogenous data (ignored).
+        fh : ForecastingHorizon, optional (default=None)
+            Forecasting horizon.
+
+        Returns
+        -------
+        self : reference to self
+        """
+        return self._pretrain(y=y, X=X, fh=fh)
+
     def _fit(self, y, X, fh):
         """Fit forecaster to training data.
 
-        For LagLlama, behavior depends on fit_strategy:
-        - "zero-shot": Creates predictor from pretrained weights without training
-        - "finetuning": Fine-tunes the model on provided data using PyTorch Lightning
+        For LagLlama, this sets up the predictor for the specific series context.
+        If pretrain() was called before, uses the pretrained predictor.
+        If not, creates a zero-shot predictor from the pretrained checkpoint.
 
         Parameters
         ----------
@@ -373,6 +535,29 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         # sktime's back-conversion (via self._converter_store_y).
         self._fit_column_names = list(y.columns)
 
+        # Pre-compute _df_config and _is_range_index so that predict() does not
+        # mutate __dict__ structure (sktime non-state-changing contract requires
+        # predict() to leave __dict__ deeply unchanged).
+        target_col = y.columns[0]
+        if isinstance(y.index, pd.MultiIndex):
+            if y.index.nlevels >= 3:
+                item_id_name = "Flattened_Level"
+            elif None in y.index.names:
+                item_id_name = "item_id"
+            else:
+                item_id_name = y.index.names[0]
+            timepoint_name = (
+                "timepoints" if y.index.names[-1] is None else y.index.names[-1]
+            )
+            self._df_config = {
+                "target": [target_col],
+                "item_id": item_id_name,
+                "timepoints": timepoint_name,
+            }
+        else:
+            self._df_config = {"target": [target_col]}
+        self._is_range_index = self.check_range_index(y)
+
         _check_soft_dependencies("torch", severity="error")
         import torch
 
@@ -382,6 +567,11 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
             raise NotImplementedError(
                 "in-sample forecasting is not supported by LagLlamaForecaster"
             )
+
+        # If already pretrained, predictor_ exists - just return
+        # (pretrain sets up the model, fit just sets context)
+        if hasattr(self, "predictor_") and self.predictor_ is not None:
+            return self
 
         # Import LagLlama estimator
         if self.use_source_package:
@@ -443,32 +633,13 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
 
         torch.load = patched_load
         try:
-            if self.fit_strategy == "zero-shot":
-                # Zero-shot: create predictor without training
-                lightning_module = self.estimator_.create_lightning_module()
-                transformation = self.estimator_.create_transformation()
-                self.predictor_ = self.estimator_.create_predictor(
-                    transformation, lightning_module
-                )
-            elif self.fit_strategy == "finetuning":
-                # Fine-tuning: train the model on provided data
-                # Prepare training data
-                training_data, validation_data = self._prepare_training_data(y, fh)
-
-                # Train and get predictor
-                if validation_data is not None:
-                    self.predictor_ = self.estimator_.train(
-                        training_data=training_data,
-                        validation_data=validation_data,
-                        cache_data=True,
-                        shuffle_buffer_length=1000,
-                    )
-                else:
-                    self.predictor_ = self.estimator_.train(
-                        training_data=training_data,
-                        cache_data=True,
-                        shuffle_buffer_length=1000,
-                    )
+            # Zero-shot: create predictor from checkpoint without training.
+            # Fine-tuning is handled by pretrain() before fit() is called.
+            lightning_module = self.estimator_.create_lightning_module()
+            transformation = self.estimator_.create_transformation()
+            self.predictor_ = self.estimator_.create_predictor(
+                transformation, lightning_module
+            )
         finally:
             # Restore original torch.load
             torch.load = original_load
@@ -559,7 +730,7 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         extended_df = extended_df.sort_index()
         return extended_df
 
-    def _predict(self, fh, X=None, y=None):
+    def _predict(self, fh, X=None):
         """Forecast time series at future horizon.
 
         private _predict containing the core logic, called from predict
@@ -579,9 +750,6 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         X : optional (default=None)
             guaranteed to be of an mtype in self.get_tag("X_inner_mtype")
             Exogeneous time series for the forecast
-        y : time series in ``sktime`` compatible format, optional (default=None)
-            Historical values of the time series that should be predicted.
-            If not None, global forecasting will be performed.
 
         Returns
         -------
@@ -597,11 +765,9 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
                 "in-sample forecasting is not supported by LagLlamaForecaster"
             )
 
-        if y is None:
-            y = self._y
-            _y = self._y.copy()
-        else:
-            _y = y.copy()
+        # Use self._y (stored during fit)
+        y = self._y
+        _y = self._y.copy()
 
         _y = self._extend_df(_y, fh)
 
@@ -622,14 +788,18 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         _y = self._convert_to_float(_y)
         dataset = self._get_gluonts_dataset(_y)
 
-        # Forming a list of the forecasting iterations
-        # make_evaluation_predictions uses sampling; ensure deterministic output across
-        # repeated calls (e.g., predict() then score()) by fixing RNG locally.
+        # make_evaluation_predictions returns a lazy iterator; sampling only occurs
+        # when the iterator is consumed. Consume it inside the seeded context so
+        # that numpy, torch, and Python RNG are all fixed during sampling.
+        import random
+
         import numpy as np
         import torch
 
         np_state = np.random.get_state()
+        py_state = random.getstate()
         np.random.seed(0)
+        random.seed(0)
         try:
             with torch.random.fork_rng():
                 torch.manual_seed(0)
@@ -638,9 +808,11 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
                     predictor=self.predictor_,
                     num_samples=self.num_samples,
                 )
+                forecasts = list(forecast_it)
         finally:
             np.random.set_state(np_state)
-        predictions = self._get_prediction_df(forecast_it, self._df_config)
+            random.setstate(py_state)
+        predictions = self._get_prediction_df(iter(forecasts), self._df_config)
 
         # Convert back to hierarchical if needed
         if _is_hierarchical:
@@ -675,62 +847,49 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
                 predictions = predictions.reindex(pred_out_expected)
             predictions.index = pred_out_expected
         else:
-            # For non-range indices, align predictions to the expected index
-            # This ensures correct timestamps when y has different timestamps
-            # than training data
+            # For non-range indices, align predictions to the expected index.
+            # For panel data predictions is a MultiIndex DataFrame; extract the
+            # time level to check for Period/Datetime mismatch.
             pred_out_for_loc = pred_out_expected
-            if isinstance(predictions.index, pd.PeriodIndex) and isinstance(
-                pred_out_expected, pd.DatetimeIndex
+            pred_time_idx = (
+                predictions.index.get_level_values(-1)
+                if isinstance(predictions.index, pd.MultiIndex)
+                else predictions.index
+            )
+            exp_time_idx = (
+                pred_out_expected.get_level_values(-1)
+                if isinstance(pred_out_expected, pd.MultiIndex)
+                else pred_out_expected
+            )
+            if isinstance(pred_time_idx, pd.PeriodIndex) and isinstance(
+                exp_time_idx, pd.DatetimeIndex
             ):
-                pred_out_for_loc = pred_out_expected.to_period(predictions.index.freq)
-            elif isinstance(predictions.index, pd.DatetimeIndex) and isinstance(
-                pred_out_expected, pd.PeriodIndex
+                if isinstance(pred_out_expected, pd.MultiIndex):
+                    pred_out_for_loc = pred_out_expected.set_levels(
+                        pred_out_expected.levels[-1].to_period(pred_time_idx.freq),
+                        level=-1,
+                    )
+                else:
+                    pred_out_for_loc = pred_out_expected.to_period(pred_time_idx.freq)
+            elif isinstance(pred_time_idx, pd.DatetimeIndex) and isinstance(
+                exp_time_idx, pd.PeriodIndex
             ):
-                pred_out_for_loc = pred_out_expected.to_timestamp()
+                if isinstance(pred_out_expected, pd.MultiIndex):
+                    pred_out_for_loc = pred_out_expected.set_levels(
+                        pred_out_expected.levels[-1].to_timestamp(), level=-1
+                    )
+                else:
+                    pred_out_for_loc = pred_out_expected.to_timestamp()
 
             try:
                 predictions = predictions.loc[pred_out_for_loc]
             except (KeyError, IndexError):
-                # If direct indexing fails, use reindex to align
                 predictions = predictions.reindex(pred_out_for_loc)
             predictions.index = pred_out_expected
 
         return predictions
 
-    def predict(self, fh=None, X=None, y=None):
-        """Forecast time series at future horizon.
-
-        This override caches the last prediction so that `score` can reuse it when
-        the passed `y` matches the cached prediction index (avoids re-sampling).
-        """
-        y_pred = super().predict(fh=fh, X=X, y=y)
-        self._last_y_pred_ = y_pred
-        return y_pred
-
-    def score(self, y, X=None, fh=None):
-        """Scores forecast against ground truth, using MAPE (non-symmetric).
-
-        If `predict` has been called immediately before `score` and the cached
-        prediction index matches `y.index`, reuse the cached prediction to avoid
-        re-sampling stochastic forecasts.
-        """
-        from sktime.performance_metrics.forecasting import (
-            mean_absolute_percentage_error,
-        )
-
-        y_pred = getattr(self, "_last_y_pred_", None)
-        if X is None and y_pred is not None and hasattr(y_pred, "index"):
-            try:
-                if y_pred.index.equals(y.index):
-                    return mean_absolute_percentage_error(y, y_pred, symmetric=False)
-            except Exception as e:
-                # Continue to fallback if index comparison fails
-                print(f"Error comparing prediction indices: {e}")
-                pass
-
-        return super().score(y, X=X, fh=fh)
-
-    def _predict_quantiles(self, fh, X=None, alpha=None, y=None):
+    def _predict_quantiles(self, fh, X=None, alpha=None):
         """Compute quantile forecasts.
 
         Parameters
@@ -741,8 +900,6 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
             Exogenous time series (ignored).
         alpha : list of float, optional (default=None)
             The quantiles to predict. If None, uses default [0.1, 0.25, 0.5, 0.75, 0.9].
-        y : pd.DataFrame, optional (default=None)
-            Time series for global forecasting. If provided, used instead of self._y.
 
         Returns
         -------
@@ -762,9 +919,8 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         if alpha is None:
             alpha = [0.1, 0.25, 0.5, 0.75, 0.9]
 
-        # Get the data (use provided y or fall back to self._y)
-        if y is None:
-            y = self._y
+        # Use self._y (stored during fit)
+        y = self._y
         _y = y.copy()
 
         _y = self._extend_df(_y, fh)
@@ -786,13 +942,18 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
         _y = self._convert_to_float(_y)
         dataset = self._get_gluonts_dataset(_y)
 
-        # Get predictions with samples
-        # ensure deterministic output across repeated calls
+        # make_evaluation_predictions returns a lazy iterator; sampling only occurs
+        # when the iterator is consumed. Consume it inside the seeded context so
+        # that numpy, torch, and Python RNG are all fixed during sampling.
+        import random
+
         import numpy as np
         import torch
 
         np_state = np.random.get_state()
+        py_state = random.getstate()
         np.random.seed(0)
+        random.seed(0)
         try:
             with torch.random.fork_rng():
                 torch.manual_seed(0)
@@ -801,10 +962,10 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
                     predictor=self.predictor_,
                     num_samples=self.num_samples,
                 )
+                forecasts = list(forecast_it)
         finally:
             np.random.set_state(np_state)
-
-        forecasts = list(forecast_it)
+            random.setstate(py_state)
 
         # Extract quantiles for each forecast
         quantile_dfs = []
@@ -886,7 +1047,21 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
                     new_columns, names=["variable", "alpha"]
                 )
 
-            # Handle range index conversion back
+            # Convert back to hierarchical if needed.
+            # Cannot use _convert_panel_to_hierarchical here because result has
+            # MultiIndex columns (variable, alpha), which breaks the reset_index /
+            # set_index approach used by that helper. Instead, rebuild the hierarchical
+            # MultiIndex directly from the flattened "A*B" item_id strings.
+            if _is_hierarchical:
+                new_tuples = [
+                    tuple(str(item_id).split("*")) + (time_val,)
+                    for item_id, time_val in result.index
+                ]
+                result.index = pd.MultiIndex.from_tuples(
+                    new_tuples, names=_original_index_names
+                )
+
+            # Handle range index conversion back (mirrors _predict logic)
             if original_is_range_index:
                 timepoints = self.return_time_index(result)
                 timepoints = timepoints.to_timestamp()
@@ -898,34 +1073,53 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
                     result.index = result.index.set_levels(
                         levels=timepoints.unique(), level=-1
                     )
+                    # Restore integer item_ids (panel range-index case)
+                    result.index = result.index.map(
+                        lambda x: (int(x[0]),) + x[1:] if len(x) == 2 else x
+                    )
                 else:
                     result.index = timepoints
 
-            # Align predictions with expected index based on fh and cutoff
-            # Similar to _predict, calculate expected index and align
-            if not isinstance(fh.to_pandas(), pd.RangeIndex):
-                pred_out_expected = fh.get_expected_pred_idx(y, cutoff=self.cutoff)
-
-                # We want to RETURN the expected index type (derived from y),
-                # but may need a converted version to select/reindex safely.
-                pred_out_for_loc = pred_out_expected
-                if isinstance(result.index, pd.PeriodIndex) and isinstance(
-                    pred_out_expected, pd.DatetimeIndex
-                ):
-                    pred_out_for_loc = pred_out_expected.to_period(result.index.freq)
-                elif isinstance(result.index, pd.DatetimeIndex) and isinstance(
-                    pred_out_expected, pd.PeriodIndex
-                ):
+            # Align to expected sktime index (mirrors _predict logic).
+            # For panel/hierarchical data, pred_out_expected is a MultiIndex;
+            # extract the time level to check for Period/Datetime mismatch.
+            pred_out_expected = fh.get_expected_pred_idx(y, cutoff=self.cutoff)
+            pred_out_for_loc = pred_out_expected
+            result_time_idx = (
+                result.index.get_level_values(-1)
+                if isinstance(result.index, pd.MultiIndex)
+                else result.index
+            )
+            exp_time_idx = (
+                pred_out_expected.get_level_values(-1)
+                if isinstance(pred_out_expected, pd.MultiIndex)
+                else pred_out_expected
+            )
+            if isinstance(result_time_idx, pd.PeriodIndex) and isinstance(
+                exp_time_idx, pd.DatetimeIndex
+            ):
+                if isinstance(pred_out_expected, pd.MultiIndex):
+                    pred_out_for_loc = pred_out_expected.set_levels(
+                        pred_out_expected.levels[-1].to_period(result_time_idx.freq),
+                        level=-1,
+                    )
+                else:
+                    pred_out_for_loc = pred_out_expected.to_period(result_time_idx.freq)
+            elif isinstance(result_time_idx, pd.DatetimeIndex) and isinstance(
+                exp_time_idx, pd.PeriodIndex
+            ):
+                if isinstance(pred_out_expected, pd.MultiIndex):
+                    pred_out_for_loc = pred_out_expected.set_levels(
+                        pred_out_expected.levels[-1].to_timestamp(), level=-1
+                    )
+                else:
                     pred_out_for_loc = pred_out_expected.to_timestamp()
 
-                # Align the result index using the loc-friendly index
-                try:
-                    result = result.loc[pred_out_for_loc]
-                except (KeyError, IndexError):
-                    result = result.reindex(pred_out_for_loc)
-
-                # Explicitly set the final index to the expected sktime index
-                result.index = pred_out_expected
+            try:
+                result = result.loc[pred_out_for_loc]
+            except (KeyError, IndexError):
+                result = result.reindex(pred_out_for_loc)
+            result.index = pred_out_expected
 
             return result
 
@@ -955,18 +1149,16 @@ class LagLlamaForecaster(_BaseGlobalForecaster):
                 "context_length": 32,
                 "num_samples": 10,  # Reduced for faster tests
                 "batch_size": 1,
-                "fit_strategy": "zero-shot",
             },
             {
                 "context_length": 64,
                 "num_samples": 20,
                 "use_rope_scaling": True,
-                "fit_strategy": "zero-shot",
             },
             {
+                # Third config with pretrain settings (used with pretrain() method)
                 "context_length": 32,
                 "num_samples": 10,
-                "fit_strategy": "finetuning",
                 "validation_split": 0.2,
                 "trainer_kwargs": {"max_epochs": 1},  # Minimal epochs for testing
                 "lr": 5e-4,
