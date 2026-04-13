@@ -15,149 +15,65 @@
 from collections.abc import Iterable
 from typing import Any
 
-from skbase.utils.dependencies import _check_soft_dependencies
+from sktime.utils.dependencies import _safe_import
 
-if _check_soft_dependencies("torch", severity="none"):
-    import torch
-else:
-    # Create dummy class when torch is not available
-    class _DummyDevice:
-        def __init__(self, device_str):
-            self.device_str = device_str
-
-    class torch:
-        @staticmethod
-        def device(device_str):
-            return _DummyDevice(device_str)
-
-        @staticmethod
-        def no_grad():
-            def decorator(func):
-                return func
-
-            return decorator
-
-        class cuda:
-            @staticmethod
-            def is_available():
-                return False
-
-
-# gluonts requires torch, so only import when both are available
-# Use try-except to handle cases where check passes but import fails (version issues)
-_gluonts_available = False
-if _check_soft_dependencies("gluonts", severity="none") and _check_soft_dependencies(
-    "torch", severity="none"
-):
-    try:
-        from gluonts.core.component import validated
-        from gluonts.dataset.common import Dataset
-        from gluonts.dataset.field_names import FieldName
-        from gluonts.dataset.loader import as_stacked_batches
-        from gluonts.dataset.stat import calculate_dataset_statistics
-        from gluonts.itertools import Cyclic
-        from gluonts.time_feature import (
-            get_lags_for_frequency,
-            time_features_from_frequency_str,
-        )
-        from gluonts.torch.distributions import NegativeBinomialOutput, StudentTOutput
-        from gluonts.torch.model.estimator import PyTorchLightningEstimator
-        from gluonts.torch.model.predictor import PyTorchPredictor
-        from gluonts.torch.modules.loss import DistributionLoss, NegativeLogLikelihood
-        from gluonts.transform import (
-            AddObservedValuesIndicator,
-            AddTimeFeatures,
-            Chain,
-            DummyValueImputation,
-            ExpectedNumInstanceSampler,
-            InstanceSampler,
-            InstanceSplitter,
-            TestSplitSampler,
-            Transformation,
-            ValidationSplitSampler,
-        )
-
-        _gluonts_available = True
-    except (ImportError, ModuleNotFoundError):
-        # If import fails (e.g., version mismatch), fall back to dummy classes
-        _gluonts_available = False
-
-if not _gluonts_available:
-    # Create dummy classes when gluonts is not available
-    def validated():
-        def decorator(func):
-            return func
-
-        return decorator
-
-    class Dataset:
-        pass
-
-    class FieldName:
-        pass
-
-    def as_stacked_batches(*args, **kwargs):
-        pass
-
-    def calculate_dataset_statistics(*args, **kwargs):
-        pass
-
-    class Cyclic:
-        pass
-
-    def get_lags_for_frequency(*args, **kwargs):
-        pass
-
-    def time_features_from_frequency_str(*args, **kwargs):
-        pass
-
-    class NegativeBinomialOutput:
-        pass
-
-    class StudentTOutput:
-        pass
-
-    class PyTorchLightningEstimator:
-        pass
-
-    class PyTorchPredictor:
-        pass
-
-    class DistributionLoss:
-        pass
-
-    class NegativeLogLikelihood:
-        pass
-
-    class AddObservedValuesIndicator:
-        pass
-
-    class AddTimeFeatures:
-        pass
-
-    class Chain:
-        pass
-
-    class DummyValueImputation:
-        pass
-
-    class ExpectedNumInstanceSampler:
-        pass
-
-    class InstanceSampler:
-        pass
-
-    class InstanceSplitter:
-        pass
-
-    class TestSplitSampler:
-        pass
-
-    class Transformation:
-        pass
-
-    class ValidationSplitSampler:
-        pass
+torch = _safe_import("torch")
+validated = _safe_import("gluonts.core.component.validated", pkg_name="gluonts")
+Dataset = _safe_import("gluonts.dataset.common.Dataset", pkg_name="gluonts")
+FieldName = _safe_import("gluonts.dataset.field_names.FieldName", pkg_name="gluonts")
+as_stacked_batches = _safe_import(
+    "gluonts.dataset.loader.as_stacked_batches", pkg_name="gluonts"
+)
+calculate_dataset_statistics = _safe_import(
+    "gluonts.dataset.stat.calculate_dataset_statistics", pkg_name="gluonts"
+)
+Cyclic = _safe_import("gluonts.itertools.Cyclic", pkg_name="gluonts")
+get_lags_for_frequency = _safe_import(
+    "gluonts.time_feature.get_lags_for_frequency", pkg_name="gluonts"
+)
+time_features_from_frequency_str = _safe_import(
+    "gluonts.time_feature.time_features_from_frequency_str", pkg_name="gluonts"
+)
+NegativeBinomialOutput = _safe_import(
+    "gluonts.torch.distributions.NegativeBinomialOutput", pkg_name="gluonts"
+)
+StudentTOutput = _safe_import(
+    "gluonts.torch.distributions.StudentTOutput", pkg_name="gluonts"
+)
+PyTorchLightningEstimator = _safe_import(
+    "gluonts.torch.model.estimator.PyTorchLightningEstimator", pkg_name="gluonts"
+)
+PyTorchPredictor = _safe_import(
+    "gluonts.torch.model.predictor.PyTorchPredictor", pkg_name="gluonts"
+)
+DistributionLoss = _safe_import(
+    "gluonts.torch.modules.loss.DistributionLoss", pkg_name="gluonts"
+)
+NegativeLogLikelihood = _safe_import(
+    "gluonts.torch.modules.loss.NegativeLogLikelihood", pkg_name="gluonts"
+)
+AddObservedValuesIndicator = _safe_import(
+    "gluonts.transform.AddObservedValuesIndicator", pkg_name="gluonts"
+)
+AddTimeFeatures = _safe_import("gluonts.transform.AddTimeFeatures", pkg_name="gluonts")
+Chain = _safe_import("gluonts.transform.Chain", pkg_name="gluonts")
+DummyValueImputation = _safe_import(
+    "gluonts.transform.DummyValueImputation", pkg_name="gluonts"
+)
+ExpectedNumInstanceSampler = _safe_import(
+    "gluonts.transform.ExpectedNumInstanceSampler", pkg_name="gluonts"
+)
+InstanceSampler = _safe_import("gluonts.transform.InstanceSampler", pkg_name="gluonts")
+InstanceSplitter = _safe_import(
+    "gluonts.transform.InstanceSplitter", pkg_name="gluonts"
+)
+TestSplitSampler = _safe_import(
+    "gluonts.transform.TestSplitSampler", pkg_name="gluonts"
+)
+Transformation = _safe_import("gluonts.transform.Transformation", pkg_name="gluonts")
+ValidationSplitSampler = _safe_import(
+    "gluonts.transform.ValidationSplitSampler", pkg_name="gluonts"
+)
 
 
 from ..gluon.lightning_module import LagLlamaLightningModule

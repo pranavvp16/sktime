@@ -15,93 +15,12 @@
 # Adapted from https://github.com/vafl/gluon-ts/blob/ts_embeddings/src/gluonts/nursery/ts_embeddings/pt_augmentation.py
 
 import numpy as np
-from skbase.utils.dependencies import _check_soft_dependencies
 
-if _check_soft_dependencies("torch", severity="none"):
-    import torch
-    import torch.nn as nn
-else:
-    # Create dummy classes when torch is not available
-    # This allows class definitions to parse without errors
-    class torch:
-        @staticmethod
-        def rand(*args, **kwargs):
-            pass
+from sktime.utils.dependencies import _safe_import
 
-        @staticmethod
-        def normal(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def multinomial(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def where(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def zeros_like(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def from_numpy(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def cat(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def split(*args, **kwargs):
-            pass
-
-        class fft:
-            @staticmethod
-            def rfft(*args, **kwargs):
-                pass
-
-            @staticmethod
-            def irfft(*args, **kwargs):
-                pass
-
-        @staticmethod
-        def complex(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def bitwise_and(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def bitwise_not(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def rand_like(*args, **kwargs):
-            pass
-
-        class Tensor:
-            pass
-
-    class nn:
-        class Module:
-            pass
-
-        class ModuleList:
-            pass
-
-
-if _check_soft_dependencies("scipy", severity="none"):
-    from scipy.interpolate import CubicSpline
-else:
-    # Create dummy class when scipy is not available
-    class CubicSpline:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __call__(self, *args, **kwargs):
-            pass
+torch = _safe_import("torch")
+nn = _safe_import("torch.nn")
+CubicSpline = _safe_import("scipy.interpolate.CubicSpline", pkg_name="scipy")
 
 
 class ApplyAugmentations(nn.Module):

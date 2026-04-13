@@ -12,19 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from skbase.utils.dependencies import _check_soft_dependencies
+from sktime.utils.dependencies import _safe_import
 
-if _check_soft_dependencies("torch", severity="none"):
-    import torch
-else:
-    # Create dummy class when torch is not available
-    class torch:
-        @staticmethod
-        def no_grad():
-            def decorator(func):
-                return func
-
-            return decorator
+torch = _safe_import("torch")
 
 
 @torch.no_grad()

@@ -14,107 +14,21 @@
 from collections.abc import Callable
 from functools import partial
 
-from skbase.utils.dependencies import _check_soft_dependencies
+from sktime.utils.dependencies import _safe_import
 
-if _check_soft_dependencies("torch", severity="none"):
-    import torch
-    import torch.nn as nn
-    import torch.nn.functional as F
-    from torch.distributions import Beta, Distribution, constraints
-else:
-    # Create dummy classes when torch is not available
-    class torch:
-        class Tensor:
-            pass
-
-        @staticmethod
-        def arange(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def cos(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def pi():
-            pass
-
-        @staticmethod
-        def rand(*args, **kwargs):
-            pass
-
-        @staticmethod
-        def no_grad():
-            def decorator(func):
-                return func
-
-            return decorator
-
-        class Size:
-            pass
-
-        class distributions:
-            class Beta:
-                pass
-
-            class Distribution:
-                pass
-
-            class constraints:
-                class Constraint:
-                    pass
-
-    # Make Distribution, Beta, and constraints available at module level
-    Distribution = torch.distributions.Distribution
-    Beta = torch.distributions.Beta
-    constraints = torch.distributions.constraints
-
-    class nn:
-        class Module:
-            pass
-
-        class Sequential:
-            pass
-
-        class Linear:
-            pass
-
-        class PReLU:
-            pass
-
-    class F:
-        pass
-
-
-# gluonts requires torch, so only import when both are available
-# Use try-except to handle cases where check passes but import fails (version issues)
-_gluonts_available = False
-if _check_soft_dependencies("gluonts", severity="none") and _check_soft_dependencies(
-    "torch", severity="none"
-):
-    try:
-        from gluonts.core.component import validated
-        from gluonts.torch.distributions import DistributionOutput
-        from gluonts.torch.modules.lambda_layer import LambdaLayer
-
-        _gluonts_available = True
-    except (ImportError, ModuleNotFoundError):
-        # If import fails (e.g., version mismatch), fall back to dummy classes
-        _gluonts_available = False
-
-if not _gluonts_available:
-    # Create dummy classes when gluonts is not available
-    def validated():
-        def decorator(func):
-            return func
-
-        return decorator
-
-    class DistributionOutput:
-        pass
-
-    class LambdaLayer:
-        pass
+torch = _safe_import("torch")
+nn = _safe_import("torch.nn")
+F = _safe_import("torch.nn.functional")
+Beta = _safe_import("torch.distributions.Beta")
+Distribution = _safe_import("torch.distributions.Distribution")
+constraints = _safe_import("torch.distributions.constraints")
+validated = _safe_import("gluonts.core.component.validated", pkg_name="gluonts")
+DistributionOutput = _safe_import(
+    "gluonts.torch.distributions.DistributionOutput", pkg_name="gluonts"
+)
+LambdaLayer = _safe_import(
+    "gluonts.torch.modules.lambda_layer.LambdaLayer", pkg_name="gluonts"
+)
 
 
 class QuantileLayer(nn.Module):

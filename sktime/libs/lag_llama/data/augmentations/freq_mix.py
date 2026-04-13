@@ -13,19 +13,10 @@
 # limitations under the License.
 
 import numpy as np
-from skbase.utils.dependencies import _check_soft_dependencies
 
-if _check_soft_dependencies("torch", severity="none"):
-    import torch
-else:
-    # Create dummy class when torch is not available
-    class torch:
-        @staticmethod
-        def no_grad():
-            def decorator(func):
-                return func
+from sktime.utils.dependencies import _safe_import
 
-            return decorator
+torch = _safe_import("torch")
 
 
 @torch.no_grad()

@@ -15,68 +15,24 @@
 import random
 
 import numpy as np
-from skbase.utils.dependencies import _check_soft_dependencies
 
-if _check_soft_dependencies("lightning", severity="none"):
-    from lightning import LightningModule
-else:
-    # Create dummy class when lightning is not available
-    class LightningModule:
-        pass
+from sktime.utils.dependencies import _safe_import
 
-
-if _check_soft_dependencies("torch", severity="none"):
-    import torch
-    import torch.nn.functional as F
-else:
-    # Create dummy classes when torch is not available
-    class torch:
-        class Tensor:
-            pass
-
-    class F:
-        pass
-
-
-# gluonts requires torch, so only import when both are available
-# Use try-except to handle cases where check passes but import fails (version issues)
-_gluonts_available = False
-if _check_soft_dependencies("gluonts", severity="none") and _check_soft_dependencies(
-    "torch", severity="none"
-):
-    try:
-        from gluonts.core.component import validated
-        from gluonts.itertools import prod
-        from gluonts.torch.modules.loss import DistributionLoss, NegativeLogLikelihood
-        from gluonts.torch.util import repeat_along_dim, take_last
-
-        _gluonts_available = True
-    except (ImportError, ModuleNotFoundError):
-        # If import fails (e.g., version mismatch), fall back to dummy classes
-        _gluonts_available = False
-
-if not _gluonts_available:
-    # Create dummy classes when gluonts is not available
-    def validated():
-        def decorator(func):
-            return func
-
-        return decorator
-
-    def prod(*args, **kwargs):
-        pass
-
-    class DistributionLoss:
-        pass
-
-    class NegativeLogLikelihood:
-        pass
-
-    def repeat_along_dim(*args, **kwargs):
-        pass
-
-    def take_last(*args, **kwargs):
-        pass
+LightningModule = _safe_import("lightning.LightningModule", pkg_name="lightning")
+torch = _safe_import("torch")
+F = _safe_import("torch.nn.functional")
+validated = _safe_import("gluonts.core.component.validated", pkg_name="gluonts")
+prod = _safe_import("gluonts.itertools.prod", pkg_name="gluonts")
+DistributionLoss = _safe_import(
+    "gluonts.torch.modules.loss.DistributionLoss", pkg_name="gluonts"
+)
+NegativeLogLikelihood = _safe_import(
+    "gluonts.torch.modules.loss.NegativeLogLikelihood", pkg_name="gluonts"
+)
+repeat_along_dim = _safe_import(
+    "gluonts.torch.util.repeat_along_dim", pkg_name="gluonts"
+)
+take_last = _safe_import("gluonts.torch.util.take_last", pkg_name="gluonts")
 
 
 from ..data.augmentations.augmentations import (

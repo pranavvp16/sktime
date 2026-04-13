@@ -15,67 +15,25 @@
 import math
 from dataclasses import dataclass
 
-from skbase.utils.dependencies import _check_soft_dependencies
+from sktime.utils.dependencies import _safe_import
 
 from ..gluon_utils.scalers.robust_scaler import RobustScaler
 
-if _check_soft_dependencies("torch", severity="none"):
-    import torch
-    from torch import nn
-    from torch.nn import functional as F
-else:
-    # Create dummy classes when torch is not available
-    class torch:
-        class Tensor:
-            pass
-
-        class nn:
-            class Module:
-                pass
-
-    class nn:
-        class Module:
-            pass
-
-    class F:
-        pass
-
-
-# gluonts requires torch, so only import when both are available
-# Use try-except to handle cases where check passes but import fails (version issues)
-_gluonts_available = False
-if _check_soft_dependencies("gluonts", severity="none") and _check_soft_dependencies(
-    "torch", severity="none"
-):
-    try:
-        from gluonts.torch.distributions import DistributionOutput
-        from gluonts.torch.scaler import MeanScaler, NOPScaler, StdScaler
-        from gluonts.torch.util import lagged_sequence_values, unsqueeze_expand
-
-        _gluonts_available = True
-    except (ImportError, ModuleNotFoundError):
-        # If import fails (e.g., version mismatch), fall back to dummy classes
-        _gluonts_available = False
-
-if not _gluonts_available:
-    # Create dummy classes when gluonts is not available
-    class DistributionOutput:
-        pass
-
-    class MeanScaler:
-        pass
-
-    class NOPScaler:
-        pass
-
-    class StdScaler:
-        pass
-
-    def lagged_sequence_values(*args, **kwargs):
-        pass
-
-    def unsqueeze_expand(*args, **kwargs):
-        pass
+torch = _safe_import("torch")
+nn = _safe_import("torch.nn")
+F = _safe_import("torch.nn.functional")
+DistributionOutput = _safe_import(
+    "gluonts.torch.distributions.DistributionOutput", pkg_name="gluonts"
+)
+MeanScaler = _safe_import("gluonts.torch.scaler.MeanScaler", pkg_name="gluonts")
+NOPScaler = _safe_import("gluonts.torch.scaler.NOPScaler", pkg_name="gluonts")
+StdScaler = _safe_import("gluonts.torch.scaler.StdScaler", pkg_name="gluonts")
+lagged_sequence_values = _safe_import(
+    "gluonts.torch.util.lagged_sequence_values", pkg_name="gluonts"
+)
+unsqueeze_expand = _safe_import(
+    "gluonts.torch.util.unsqueeze_expand", pkg_name="gluonts"
+)
 
 
 @dataclass
