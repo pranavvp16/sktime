@@ -66,6 +66,11 @@ class _CachedLagLlama:
         else:
             from sktime.libs.lag_llama.gluon.estimator import LagLlamaEstimator
 
+        from sktime.libs.lag_llama.gluon.gluonts_torch_modules_loss_shim import (
+            ensure_gluonts_torch_modules_loss_shim,
+        )
+
+        ensure_gluonts_torch_modules_loss_shim()
         ckpt = torch.load(self.ckpt_path, map_location=self.device, weights_only=False)
         estimator_args = ckpt["hyper_parameters"]["model_kwargs"]
 
@@ -248,7 +253,7 @@ class LagLlamaForecaster(BaseForecaster):
             "gluonts>=0.14.0",
             "torch",
             "lightning>=2.0",
-            "huggingface_hub",
+            "huggingface-hub",
         ],
         "tests:vm": True,
     }
@@ -514,6 +519,11 @@ class LagLlamaForecaster(BaseForecaster):
         # Get or download checkpoint
         ckpt_path = self._ensure_checkpoint()
 
+        from sktime.libs.lag_llama.gluon.gluonts_torch_modules_loss_shim import (
+            ensure_gluonts_torch_modules_loss_shim,
+        )
+
+        ensure_gluonts_torch_modules_loss_shim()
         # Load checkpoint with PyTorch 2.6+ compatibility
         ckpt = torch.load(ckpt_path, map_location=self.device_, weights_only=False)
         estimator_args = ckpt["hyper_parameters"]["model_kwargs"]

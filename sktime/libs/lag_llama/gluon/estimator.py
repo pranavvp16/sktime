@@ -56,12 +56,13 @@ PyTorchLightningEstimator = _safe_import(
 PyTorchPredictor = _safe_import(
     "gluonts.torch.model.predictor.PyTorchPredictor", pkg_name="gluonts"
 )
-DistributionLoss = _safe_import(
-    "gluonts.torch.modules.loss.DistributionLoss", pkg_name="gluonts"
+# gluonts.torch.modules.loss removed in gluonts>=0.15; see
+# gluonts_torch_modules_loss_shim.
+from sktime.libs.lag_llama.gluon.gluonts_torch_modules_loss_shim import (
+    DistributionLoss,
+    NegativeLogLikelihood,
 )
-NegativeLogLikelihood = _safe_import(
-    "gluonts.torch.modules.loss.NegativeLogLikelihood", pkg_name="gluonts"
-)
+
 AddObservedValuesIndicator = _safe_import(
     "gluonts.transform.AddObservedValuesIndicator", pkg_name="gluonts"
 )

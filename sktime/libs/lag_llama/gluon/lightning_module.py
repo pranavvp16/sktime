@@ -33,12 +33,9 @@ def validated():
 
 
 prod = _safe_import("gluonts.itertools.prod", pkg_name="gluonts")
-DistributionLoss = _safe_import(
-    "gluonts.torch.modules.loss.DistributionLoss", pkg_name="gluonts"
-)
-NegativeLogLikelihood = _safe_import(
-    "gluonts.torch.modules.loss.NegativeLogLikelihood", pkg_name="gluonts"
-)
+
+from .gluonts_torch_modules_loss_shim import DistributionLoss, NegativeLogLikelihood
+
 repeat_along_dim = _safe_import(
     "gluonts.torch.util.repeat_along_dim", pkg_name="gluonts"
 )
