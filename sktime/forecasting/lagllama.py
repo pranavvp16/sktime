@@ -7,6 +7,116 @@ import pandas as pd
 from skbase.utils.dependencies import _check_soft_dependencies
 
 from sktime.forecasting.base import BaseForecaster
+from sktime.utils.singleton import _multiton
+
+
+@_multiton
+class _CachedLagLlama:
+    """Cached LagLlama predictor, ensuring one instance per unique configuration.
+
+    LagLlama is immutable in zero-shot mode, so sharing one loaded predictor
+    across multiple forecaster instances (e.g. when fitting on hierarchical data)
+    has no side effects and avoids redundant checkpoint loads.
+    """
+
+    def __init__(
+        self,
+        key,
+        ckpt_path,
+        device,
+        context_length,
+        use_rope_scaling,
+        num_samples,
+        batch_size,
+        nonnegative_pred_samples,
+        use_source_package,
+        prediction_length,
+        lr,
+        aug_prob,
+        trainer_kwargs,
+    ):
+        self.key = key
+        self.ckpt_path = ckpt_path
+        self.device = device
+        self.context_length = context_length
+        self.use_rope_scaling = use_rope_scaling
+        self.num_samples = num_samples
+        self.batch_size = batch_size
+        self.nonnegative_pred_samples = nonnegative_pred_samples
+        self.use_source_package = use_source_package
+        self.prediction_length = prediction_length
+        self.lr = lr
+        self.aug_prob = aug_prob
+        self.trainer_kwargs = trainer_kwargs
+        self.estimator_ = None
+        self.predictor_ = None
+
+    def load_predictor(self):
+        """Load and return (estimator_, predictor_), reusing if already loaded."""
+        if self.predictor_ is not None:
+            return self.estimator_, self.predictor_
+
+        import torch
+
+        if self.use_source_package:
+            if _check_soft_dependencies("lag-llama", severity="warning"):
+                from lag_llama.gluon.estimator import LagLlamaEstimator
+            else:
+                from sktime.libs.lag_llama.gluon.estimator import LagLlamaEstimator
+        else:
+            from sktime.libs.lag_llama.gluon.estimator import LagLlamaEstimator
+
+        ckpt = torch.load(self.ckpt_path, map_location=self.device, weights_only=False)
+        estimator_args = ckpt["hyper_parameters"]["model_kwargs"]
+
+        rope_scaling_arguments = None
+        if self.use_rope_scaling:
+            rope_scaling_arguments = {
+                "type": "linear",
+                "factor": max(
+                    1.0,
+                    (self.context_length + self.prediction_length)
+                    / estimator_args["context_length"],
+                ),
+            }
+
+        self.estimator_ = LagLlamaEstimator(
+            ckpt_path=self.ckpt_path,
+            prediction_length=self.prediction_length,
+            context_length=self.context_length,
+            input_size=estimator_args["input_size"],
+            n_layer=estimator_args["n_layer"],
+            n_embd_per_head=estimator_args["n_embd_per_head"],
+            n_head=estimator_args["n_head"],
+            scaling=estimator_args["scaling"],
+            time_feat=estimator_args["time_feat"],
+            rope_scaling=rope_scaling_arguments,
+            batch_size=self.batch_size,
+            num_parallel_samples=self.num_samples,
+            device=self.device,
+            lr=self.lr,
+            aug_prob=self.aug_prob,
+            trainer_kwargs=self.trainer_kwargs,
+            nonnegative_pred_samples=self.nonnegative_pred_samples,
+        )
+
+        original_load = torch.load
+
+        def patched_load(*args, **kwargs):
+            kwargs["weights_only"] = False
+            return original_load(*args, **kwargs)
+
+        torch.load = patched_load
+        try:
+            lightning_module = self.estimator_.create_lightning_module()
+            transformation = self.estimator_.create_transformation()
+            self.predictor_ = self.estimator_.create_predictor(
+                transformation, lightning_module
+            )
+        finally:
+            torch.load = original_load
+
+        return self.estimator_, self.predictor_
 
 
 class LagLlamaForecaster(BaseForecaster):
@@ -131,14 +241,14 @@ class LagLlamaForecaster(BaseForecaster):
         "capability:pretrain": True,
         "capability:pred_int": True,
         "capability:pred_int:insample": False,
-        "authors": ["shlok191"],
-        "maintainers": ["shlok191"],
+        "authors": ["shlok191", "pranavvp16"],
+        "maintainers": ["pranavvp16"],
         "python_version": "<3.14",
         "python_dependencies": [
             "gluonts>=0.14.0",
             "torch",
             "lightning>=2.0",
-            "huggingface-hub",
+            "huggingface_hub",
         ],
         "tests:vm": True,
     }
@@ -559,7 +669,6 @@ class LagLlamaForecaster(BaseForecaster):
         self._is_range_index = self.check_range_index(y)
 
         _check_soft_dependencies("torch", severity="error")
-        import torch
 
         # LagLlama does not support in-sample forecasting (fh <= 0)
         fh_rel = fh.to_relative(self.cutoff)
@@ -573,78 +682,57 @@ class LagLlamaForecaster(BaseForecaster):
         if hasattr(self, "predictor_") and self.predictor_ is not None:
             return self
 
-        # Import LagLlama estimator
-        if self.use_source_package:
-            if _check_soft_dependencies("lag-llama", severity="warning"):
-                from lag_llama.gluon.estimator import LagLlamaEstimator
-            else:
-                from sktime.libs.lag_llama.gluon.estimator import LagLlamaEstimator
-        else:
-            from sktime.libs.lag_llama.gluon.estimator import LagLlamaEstimator
-
-        # Get or download checkpoint
+        # Multiton pattern: one _CachedLagLlama instance per unique configuration.
+        # Resolving the checkpoint path first ensures the key is based on the
+        # actual file path (handles the None / HF-download case).
         ckpt_path = self._ensure_checkpoint()
-
-        # Load checkpoint with PyTorch 2.6+ compatibility
-        ckpt = torch.load(ckpt_path, map_location=self.device_, weights_only=False)
-        estimator_args = ckpt["hyper_parameters"]["model_kwargs"]
-
-        # Setup RoPE scaling if requested
-        rope_scaling_arguments = None
-        if self.use_rope_scaling:
-            prediction_length = max(fh.to_relative(self.cutoff))
-            rope_scaling_arguments = {
-                "type": "linear",
-                "factor": max(
-                    1.0,
-                    (self.context_length + prediction_length)
-                    / estimator_args["context_length"],
-                ),
-            }
-
-        # Create LagLlama estimator
-        self.estimator_ = LagLlamaEstimator(
+        _prediction_length = int(max(fh.to_relative(self.cutoff)))
+        _cache_key = self._get_lagllama_cache_key(ckpt_path, _prediction_length)
+        self.estimator_, self.predictor_ = _CachedLagLlama(
+            key=_cache_key,
             ckpt_path=ckpt_path,
-            prediction_length=max(fh.to_relative(self.cutoff)),
-            context_length=self.context_length,
-            input_size=estimator_args["input_size"],
-            n_layer=estimator_args["n_layer"],
-            n_embd_per_head=estimator_args["n_embd_per_head"],
-            n_head=estimator_args["n_head"],
-            scaling=estimator_args["scaling"],
-            time_feat=estimator_args["time_feat"],
-            rope_scaling=rope_scaling_arguments,
-            batch_size=self.batch_size,
-            num_parallel_samples=self.num_samples,
             device=self.device_,
+            context_length=self.context_length,
+            use_rope_scaling=self.use_rope_scaling,
+            num_samples=self.num_samples,
+            batch_size=self.batch_size,
+            nonnegative_pred_samples=self.nonnegative_pred_samples,
+            use_source_package=self.use_source_package,
+            prediction_length=_prediction_length,
             lr=self.lr,
             aug_prob=self.aug_prob,
             trainer_kwargs=self._trainer_kwargs,
-            nonnegative_pred_samples=self.nonnegative_pred_samples,
-        )
-
-        # Create predictor with PyTorch 2.6+ compatibility patch
-        # Lightning uses weights_only=True by default which causes issues
-        original_load = torch.load
-
-        def patched_load(*args, **kwargs):
-            kwargs["weights_only"] = False
-            return original_load(*args, **kwargs)
-
-        torch.load = patched_load
-        try:
-            # Zero-shot: create predictor from checkpoint without training.
-            # Fine-tuning is handled by pretrain() before fit() is called.
-            lightning_module = self.estimator_.create_lightning_module()
-            transformation = self.estimator_.create_transformation()
-            self.predictor_ = self.estimator_.create_predictor(
-                transformation, lightning_module
-            )
-        finally:
-            # Restore original torch.load
-            torch.load = original_load
+        ).load_predictor()
 
         return self
+
+    def _get_lagllama_cache_key(self, ckpt_path, prediction_length):
+        """Return a hashable key identifying this model configuration.
+
+        Parameters
+        ----------
+        ckpt_path : str
+            Resolved path to the checkpoint file.
+        prediction_length : int
+            Prediction horizon length derived from ``fh``.
+
+        Returns
+        -------
+        str
+            String key used by the ``_CachedLagLlama`` multiton.
+        """
+        config = {
+            "ckpt_path": ckpt_path,
+            "device": str(self.device_),
+            "context_length": self.context_length,
+            "use_rope_scaling": self.use_rope_scaling,
+            "num_samples": self.num_samples,
+            "batch_size": self.batch_size,
+            "nonnegative_pred_samples": self.nonnegative_pred_samples,
+            "use_source_package": self.use_source_package,
+            "prediction_length": prediction_length,
+        }
+        return str(sorted(config.items()))
 
     def infer_freq(self, index):
         """
