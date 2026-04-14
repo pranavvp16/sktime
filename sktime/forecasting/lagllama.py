@@ -1247,18 +1247,19 @@ class LagLlamaForecaster(BaseForecaster):
                 "context_length": 32,
                 "num_samples": 10,  # Reduced for faster tests
                 "batch_size": 1,
+                "trainer_kwargs": {"max_epochs": 1},
             },
             {
                 "context_length": 64,
                 "num_samples": 20,
                 "use_rope_scaling": True,
+                "trainer_kwargs": {"max_epochs": 1},
             },
             {
-                # Third config with pretrain settings (used with pretrain() method)
                 "context_length": 32,
                 "num_samples": 10,
                 "validation_split": 0.2,
-                "trainer_kwargs": {"max_epochs": 1},  # Minimal epochs for testing
+                "trainer_kwargs": {"max_epochs": 1},
                 "lr": 5e-4,
             },
         ]
