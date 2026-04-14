@@ -253,7 +253,7 @@ class LagLlamaForecaster(BaseForecaster):
             "gluonts>=0.14.0",
             "torch",
             "lightning>=2.0",
-            "huggingface-hub",
+            "huggingface_hub",
         ],
         "tests:vm": True,
     }
