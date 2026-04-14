@@ -1,7 +1,7 @@
 # copyright: sktime developers, BSD-3-Clause License (see LICENSE file)
 """Implements an adapter for the LagLlama estimator for intergration into sktime."""
 
-__author__ = ["shlok191", "pranavvp16"]
+__author__ = ["pranavvp16"]
 
 import pandas as pd
 from skbase.utils.dependencies import _check_soft_dependencies
@@ -246,7 +246,7 @@ class LagLlamaForecaster(BaseForecaster):
         "capability:pretrain": True,
         "capability:pred_int": True,
         "capability:pred_int:insample": False,
-        "authors": ["shlok191", "pranavvp16"],
+        "authors": ["pranavvp16"],
         "maintainers": ["pranavvp16"],
         "python_version": "<3.14",
         "python_dependencies": [
