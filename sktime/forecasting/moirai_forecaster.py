@@ -18,6 +18,12 @@ class _CachedMoirai:
     The multiton ensures that multiple forecaster instances sharing the same
     checkpoint and hyperparameters reuse one loaded model rather than each
     loading their own copy.
+
+    The cache key covers all parameters that affect the loaded model except
+    ``prediction_length``, which changes with every forecasting horizon but
+    is cheap to override via ``MoiraiForecast.hparams_context`` at inference
+    time. Sharing one cached model across different horizons avoids the
+    dominant source of unnecessary reloads.
     """
 
     def __init__(
@@ -32,7 +38,6 @@ class _CachedMoirai:
         past_feat_dynamic_real_dim,
         map_location,
         use_source_package,
-        prediction_length,
     ):
         self.key = key
         self.checkpoint_path = checkpoint_path
@@ -44,7 +49,6 @@ class _CachedMoirai:
         self.past_feat_dynamic_real_dim = past_feat_dynamic_real_dim
         self.map_location = map_location
         self.use_source_package = use_source_package
-        self.prediction_length = prediction_length
         self.model_ = None
 
     def load_model(self):
@@ -52,8 +56,10 @@ class _CachedMoirai:
         if self.model_ is not None:
             return self.model_
 
+        # prediction_length is a placeholder; it is overridden at every
+        # inference call via hparams_context and does not affect the weights.
         model_kwargs = {
-            "prediction_length": self.prediction_length,
+            "prediction_length": 1,
             "context_length": self.context_length,
             "patch_size": self.patch_size,
             "num_samples": self.num_samples,
@@ -112,68 +118,132 @@ __author__ = ["gorold", "chenghaoliu89", "liu-jc", "benheid", "pranavvp16"]
 
 
 class MOIRAIForecaster(_BaseGlobalForecaster):
-    """
-    Adapter for using MOIRAI Forecasters.
+    """Adapter for MOIRAI zero-shot foundation model forecaster.
+
+    MOIRAI [1]_ is a universal time series forecasting model from Salesforce.
+    It supports univariate and multivariate targets, exogenous variables, and
+    probabilistic (quantile) predictions out of the box without fine-tuning.
+
+    This adapter exposes the sktime global forecasting API:
+
+    * **Zero-shot** — call ``fit`` then ``predict`` directly.  The model
+      weights are downloaded on first use and cached in memory via the
+      multiton pattern; subsequent calls with the same checkpoint path reuse
+      the cached instance.
+    * **Pretrain then fit** — call ``pretrain(y_panel)`` once to load the
+      model, then call ``fit(y)`` on one or more individual series.  The
+      ``pretrain`` step is a no-op for MOIRAI (no fine-tuning occurs); its
+      purpose is to load the checkpoint once and transition the estimator to
+      the ``"pretrained"`` state so that downstream ``fit`` calls skip the
+      expensive reload.
+    * **Multivariate** — pass a ``pd.DataFrame`` with multiple target columns.
+      ``target_dim`` is auto-detected from ``y.shape[1]`` at inference time,
+      so you do not need to set it explicitly.
+    * **Quantile forecasting** — call ``predict_quantiles(fh, alpha=[...])``
+      to obtain probabilistic forecasts.
 
     Parameters
     ----------
-    checkpoint_path : str, default=None
-        Path to the checkpoint of the model. Supported weights are available at [1]_.
+    checkpoint_path : str
+        HuggingFace model identifier or local path to the checkpoint.
+        Salesforce-hosted weights (e.g. ``"Salesforce/moirai-1.0-R-small"``)
+        and sktime-mirrored weights (e.g. ``"sktime/moirai-1.0-R-small"``)
+        are supported. See [2]_ for all available variants.
     context_length : int, default=200
-        Length of the context window: time points the model takes as input for
-        inference.
+        Number of past time steps fed to the model at inference. Larger
+        values provide more history but increase memory and latency.
     patch_size : int, default=32
-        Time steps to perform patching with.
+        Number of time steps per patch. Must match the value used during
+        pre-training (``"auto"`` lets the model choose).
     num_samples : int, default=100
-        Number of samples to draw.
-    map_location : str, default=None
-        Hardware to use for the model.
-    target_dim : int, default=2
-        Dimension of the target.
+        Number of Monte Carlo samples drawn to form the forecast distribution.
+        Higher values give smoother quantile estimates at the cost of speed.
+    map_location : str, optional (default=None)
+        Device string passed to PyTorch (e.g. ``"cpu"``, ``"cuda:0"``).
+        If ``None``, PyTorch selects the device automatically.
+    target_dim : int, default=1
+        Fallback target dimensionality used when ``y`` is a univariate
+        ``pd.Series`` or a single-column ``pd.DataFrame``. For multivariate
+        inputs (``y.shape[1] > 1``), ``target_dim`` is overridden
+        automatically with the actual column count at inference time.
     deterministic : bool, default=False
-        Whether to use a deterministic model.
+        If ``True``, seeds the random number generator with 42 before each
+        inference call for reproducible point forecasts.
     batch_size : int, default=32
-        Number of samples in each batch of inference.
+        Number of time series processed per inference batch.
     broadcasting : bool, default=False
-        if True, multiindex data input will be broadcasted to single series.
-        For each single series, one copy of this forecaster will try to
-        fit and predict on it. The broadcasting is happening inside automatically,
-        from the outerside api perspective, the input and output are the same,
-        only one multiindex output from ``predict``
-     use_source_package : bool, default=False
-        If True, the model and configuration will be loaded directly from the source
-        package ``uni2ts.models.moirai``. This is useful if you
-        want to bypass the local version of the package or when working in an
-        environment where the latest updates from the source package are needed.
-        If False, the model and configuration will be loaded from the local
-        version of package maintained in sktime.
-        To install the source package, follow the instructions here [2]_.
+        If ``True``, panel/hierarchical input is split into individual series
+        and each is forecast independently (disables global mode).
+    use_source_package : bool, default=False
+        If ``True``, imports ``MoiraiForecast`` from the installed ``uni2ts``
+        PyPI package instead of the vendored copy in ``sktime.libs.uni2ts``.
+        Useful when you need the latest upstream changes.
+        See [3]_ for installation instructions.
+    num_feat_dynamic_real : int, optional (default=None)
+        Number of future-known exogenous features (columns of ``X``).
+        If ``None``, inferred from ``X.shape[1]`` at predict time.
+    num_past_feat_dynamic_real : int, optional (default=None)
+        Number of past-only exogenous features. Defaults to 0.
+
+    Notes
+    -----
+    **Pretrain API workflow** (sktime 3-state pretrain protocol):
+
+    .. code-block:: python
+
+        from sktime.utils._testing.hierarchical import _make_hierarchical
+        y_panel = _make_hierarchical(hierarchy_levels=(3,), min_timepoints=50)
+
+        forecaster = MOIRAIForecaster(checkpoint_path="sktime/moirai-1.0-R-small")
+        forecaster.pretrain(y_panel)   # loads checkpoint, state → "pretrained"
+        forecaster.fit(y_panel)        # lightweight; reuses loaded weights
+        forecaster.predict(fh=[1, 2, 3])
+
+    Calling ``pretrain`` is optional; ``fit`` alone also triggers model
+    loading (via the multiton cache) if the estimator is in the ``"new"``
+    state.
+
+    **Multivariate usage**:
+
+    .. code-block:: python
+
+        import pandas as pd, numpy as np
+        index = pd.date_range("2020-01-01", periods=50, freq="D")
+        y = pd.DataFrame(np.random.randn(50, 3), index=index,
+                         columns=["a", "b", "c"])
+        forecaster = MOIRAIForecaster(checkpoint_path="sktime/moirai-1.0-R-small")
+        forecaster.fit(y)
+        # predict returns DataFrame with columns ["a", "b", "c"]
+        forecaster.predict(fh=[1, 2, 3])
+        # quantile forecasts: MultiIndex columns (variable, alpha)
+        forecaster.predict_quantiles(fh=[1, 2, 3], alpha=[0.1, 0.5, 0.9])
 
     Examples
     --------
     >>> from sktime.forecasting.moirai_forecaster import MOIRAIForecaster
     >>> import pandas as pd
     >>> import numpy as np
-    >>> morai_forecaster = MOIRAIForecaster(
-    ...     checkpoint_path=f"sktime/moirai-1.0-R-small"
+    >>> forecaster = MOIRAIForecaster(
+    ...     checkpoint_path="sktime/moirai-1.0-R-small"
     ... )
-    >>> y = np.random.normal(0, 1, (30, 2))
-    >>> X = y * 2 + np.random.normal(0, 1, (30,1))
     >>> index = pd.date_range("2020-01-01", periods=30, freq="D")
-    >>> y = pd.DataFrame(y, index=index)
-    >>> X = pd.DataFrame(X, columns=["x1", "x2"], index=index)
-    >>> morai_forecaster.fit(y, X=X)
+    >>> y = pd.DataFrame(np.random.normal(0, 1, (30, 2)), index=index)
+    >>> X = pd.DataFrame(np.random.normal(0, 1, (30, 2)),
+    ...                  columns=["x1", "x2"], index=index)
+    >>> forecaster.fit(y, X=X)
     MOIRAIForecaster(checkpoint_path='sktime/moirai-1.0-R-small')
     >>> X_test = pd.DataFrame(np.random.normal(0, 1, (10, 2)),
     ...                      columns=["x1", "x2"],
     ...                      index=pd.date_range("2020-01-31", periods=10, freq="D"),
     ... )
-    >>> forecast = morai_forecaster.predict(fh=range(1, 11), X=X_test)
+    >>> forecast = forecaster.predict(fh=range(1, 11), X=X_test)
 
     References
     ----------
-    .. [1] https://huggingface.co/collections/sktime/moirai-variations-66ba3bc9f1dfeeafaed3b974
-    .. [2] https://pypi.org/project/uni2ts/1.1.0/
+    .. [1] Woo, G. et al. (2024). "Unified Training of Universal Time Series
+       Forecasting Transformers." arXiv:2402.02592.
+    .. [2] https://huggingface.co/collections/sktime/moirai-variations-66ba3bc9f1dfeeafaed3b974
+    .. [3] https://pypi.org/project/uni2ts/1.1.0/
     """
 
     _tags = {
@@ -284,12 +354,19 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
 
     def _get_moirai_cache_key(
         self,
-        prediction_length,
         feat_dynamic_real_dim,
         past_feat_dynamic_real_dim,
         target_dim=None,
     ):
-        """Return a hashable key identifying this model configuration."""
+        """Return a hashable key identifying this model configuration.
+
+        ``prediction_length`` is intentionally excluded: it changes with every
+        forecasting horizon but is cheap to override via
+        ``MoiraiForecast.hparams_context`` at inference time.  All other
+        parameters that affect the model structure or loaded weights are
+        included so that structurally different configurations get separate
+        cache entries.
+        """
         config = {
             "checkpoint_path": self.checkpoint_path,
             "context_length": self.context_length,
@@ -300,22 +377,25 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             "past_feat_dynamic_real_dim": past_feat_dynamic_real_dim,
             "map_location": str(self.map_location),
             "use_source_package": self.use_source_package,
-            "prediction_length": prediction_length,
         }
         return str(sorted(config.items()))
 
     def _load_model_via_multiton(
         self,
-        prediction_length,
         feat_dynamic_real_dim,
         past_feat_dynamic_real_dim,
         target_dim=None,
     ):
-        """Load or retrieve model from the _CachedMoirai multiton."""
+        """Load or retrieve model from the _CachedMoirai multiton.
+
+        ``prediction_length`` is not accepted here; it is set per-call via
+        ``hparams_context`` inside ``_predict`` and ``_predict_quantiles``.
+        All other structural parameters are forwarded so that the cache key
+        correctly separates models with different configurations.
+        """
         if target_dim is None:
             target_dim = self.target_dim
         cache_key = self._get_moirai_cache_key(
-            prediction_length,
             feat_dynamic_real_dim,
             past_feat_dynamic_real_dim,
             target_dim,
@@ -331,40 +411,35 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             past_feat_dynamic_real_dim=past_feat_dynamic_real_dim,
             map_location=self.map_location,
             use_source_package=self.use_source_package,
-            prediction_length=prediction_length,
         ).load_model()
 
     def _pretrain(self, y, X=None, fh=None):
         """Load the MOIRAI foundation model from checkpoint (pretrain step).
 
-        This implements the first stage of the 3-state sktime pretrain API:
-        "new" → "pretrained". The model is loaded once here and reused in
-        subsequent ``fit()`` calls without reloading.
+        This implements the first stage of the sktime pretrain API:
+        ``new`` → ``pretrained``. The model weights are downloaded/loaded
+        once here and reused in subsequent ``fit()`` calls without reloading.
 
-        MOIRAI is a zero-shot foundation model; this method performs model
-        loading (the expensive step), not fine-tuning.
+        MOIRAI is a zero-shot foundation model; no fine-tuning is performed.
+        ``prediction_length`` is set per-call via ``hparams_context`` at
+        inference time and does not need to be fixed here.
 
         Parameters
         ----------
         y : pd.DataFrame
-            Panel or hierarchical time series data. Not used for loading but
-            required by the pretrain API signature.
+            Panel or hierarchical time series data. Used to infer
+            ``target_dim`` (number of target columns).
         X : pd.DataFrame, optional (default=None)
-            Exogenous data. Used only to infer ``feat_dynamic_real_dim`` when
+            Exogenous data. Used to infer ``feat_dynamic_real_dim`` when
             ``num_feat_dynamic_real`` is not set explicitly.
         fh : ForecastingHorizon, optional (default=None)
-            Forecasting horizon used to set ``prediction_length``.
+            Ignored at pretrain time; ``prediction_length`` is overridden
+            via ``hparams_context`` at each inference call.
 
         Returns
         -------
         self : reference to self
         """
-        if fh is not None and self._cutoff is not None:
-            prediction_length = int(max(fh.to_relative(self._cutoff)))
-        else:
-            prediction_length = int(getattr(self, "_pretrain_prediction_length_", 1))
-        self._pretrain_prediction_length_ = prediction_length
-
         feat_dynamic_real_dim = (
             self.num_feat_dynamic_real
             if self.num_feat_dynamic_real is not None
@@ -375,17 +450,15 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             if self.num_past_feat_dynamic_real is not None
             else 0
         )
-
-        # For multivariate data (>1 col), override target_dim with actual column count.
-        # For univariate (Series or 1-col DataFrame), keep self.target_dim as-is.
+        # For multivariate (>1 col) auto-detect from data; otherwise use the
+        # constructor param (default 2) which matches the 2D target format
+        # that GluonTS PandasDataset produces for single-column target lists.
         effective_target_dim = (
             y.shape[1]
             if isinstance(y, pd.DataFrame) and y.shape[1] > 1
             else self.target_dim
         )
-
         self._load_model_via_multiton(
-            prediction_length,
             feat_dynamic_real_dim,
             past_feat_dynamic_real_dim,
             effective_target_dim,
@@ -393,16 +466,21 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
         return self
 
     def _pretrain_update(self, y, X=None, fh=None):
-        """Re-load the model with updated parameters (pretrain update step).
+        """Incremental pretrain step called when pretrain() is called again.
+
+        For MOIRAI, repeated pretraining simply re-triggers model loading via
+        the multiton cache — the cached instance is returned immediately if
+        the checkpoint is already loaded, so this is effectively a no-op
+        after the first pretrain call.
 
         Parameters
         ----------
         y : pd.DataFrame
             Panel or hierarchical time series data.
         X : pd.DataFrame, optional (default=None)
-            Exogenous data.
+            Exogenous data (ignored at pretrain time).
         fh : ForecastingHorizon, optional (default=None)
-            Forecasting horizon.
+            Forecasting horizon (ignored at pretrain time).
 
         Returns
         -------
@@ -411,11 +489,6 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
         return self._pretrain(y=y, X=X, fh=fh)
 
     def _fit(self, y, X, fh):
-        if fh is not None:
-            prediction_length = int(max(fh.to_relative(self.cutoff)))
-        else:
-            prediction_length = int(getattr(self, "_pretrain_prediction_length_", 1))
-
         feat_dynamic_real_dim = (
             self.num_feat_dynamic_real
             if self.num_feat_dynamic_real is not None
@@ -426,22 +499,19 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             if self.num_past_feat_dynamic_real is not None
             else 0
         )
-
-        # For multivariate data (>1 col), override target_dim with actual column count.
         effective_target_dim = (
             y.shape[1]
             if isinstance(y, pd.DataFrame) and y.shape[1] > 1
             else self.target_dim
         )
 
-        # If pretrained, reuse the already-loaded model — skip expensive reload
+        # If pretrained, reuse the already-loaded model — skip expensive reload.
+        # prediction_length is overridden via hparams_context at inference.
         if hasattr(self, "model_"):
-            self.model_.hparams["prediction_length"] = prediction_length
             return self
 
         # Zero-shot path (no prior pretrain): load via multiton
         self._load_model_via_multiton(
-            prediction_length,
             feat_dynamic_real_dim,
             past_feat_dynamic_real_dim,
             effective_target_dim,
