@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from skbase.utils.dependencies import _check_soft_dependencies
 
-from sktime.forecasting.base import _BaseGlobalForecaster
+from sktime.forecasting.base import BaseForecaster
 from sktime.utils.singleton import _multiton
 
 
@@ -117,7 +117,7 @@ __author__ = ["gorold", "chenghaoliu89", "liu-jc", "benheid", "pranavvp16"]
 # gorold, chenghaoliu89, liu-jc are from SalesforceAIResearch/uni2ts
 
 
-class MOIRAIForecaster(_BaseGlobalForecaster):
+class MOIRAIForecaster(BaseForecaster):
     """Adapter for MOIRAI zero-shot foundation model forecaster.
 
     MOIRAI [1]_ is a universal time series forecasting model from Salesforce.
@@ -264,7 +264,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
         ],
         # estimator type
         # --------------
-        "scitype:y": "both",
+        "capability:multivariate": True,
         "capability:exogenous": True,
         "requires-fh-in-fit": False,
         "X-y-must-have-same-index": True,
@@ -281,7 +281,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
         "capability:insample": False,
         "capability:pred_int:insample": False,
         "capability:pretrain": True,
-        "capability:global_forecasting": True,
+        "capability:global_forecasting": False,
         # CI and test flags
         # -----------------
         "tests:vm": True,
@@ -324,6 +324,75 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
                     "capability:global_forecasting": False,
                 }
             )
+
+    def __getstate__(self):
+        """Return pickle state, excluding the unpickleable fitted model.
+
+        The loaded model references ``uni2ts`` classes that are only available
+        while the ``patch.dict`` context is active. After the context exits the
+        classes are no longer importable under the ``uni2ts`` namespace, so the
+        model cannot be pickled. We drop it from the state; callers that need
+        persistence should save/reload the checkpoint directly via HuggingFace.
+        """
+        state = self.__dict__.copy()
+        state.pop("model_", None)
+        return state
+
+    def __setstate__(self, state):
+        """Restore from pickle state and reload the model.
+
+        ``model_`` is dropped by ``__getstate__`` because the PyTorch/uni2ts
+        objects are not directly picklable via the vendored namespace.  On
+        unpickling we reconstruct the same multiton key from the stored
+        hyperparameters and ``self._y`` / ``self._X``, then call
+        ``_load_model_via_multiton``.  The model is served from the in-process
+        multiton cache (if still alive) or reloaded from the HuggingFace disk
+        cache — either way it is cheap relative to the original network
+        download.
+        """
+        self.__dict__.update(state)
+        if getattr(self, "_is_fitted", False) and not hasattr(self, "model_"):
+            feat_dynamic_real_dim = (
+                self.num_feat_dynamic_real
+                if self.num_feat_dynamic_real is not None
+                else (self._X.shape[1] if self._X is not None else 0)
+            )
+            past_feat_dynamic_real_dim = (
+                self.num_past_feat_dynamic_real
+                if self.num_past_feat_dynamic_real is not None
+                else 0
+            )
+            effective_target_dim = (
+                self._y.shape[1]
+                if isinstance(self._y, pd.DataFrame) and self._y.shape[1] > 1
+                else self.target_dim
+            )
+            self._load_model_via_multiton(
+                feat_dynamic_real_dim,
+                past_feat_dynamic_real_dim,
+                effective_target_dim,
+            )
+
+    def __deepcopy__(self, memo):
+        """Deep copy that shares the (non-serializable) model reference.
+
+        ``deepcopy`` is called by ``update_predict`` to create a detached
+        copy of the estimator. Dropping ``model_`` would break that copy's
+        ability to predict, so we share the reference instead of copying it.
+        The underlying PyTorch model is large and effectively immutable after
+        loading, so sharing is safe.
+        """
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k == "model_":
+                setattr(result, k, v)
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
 
     # Apply a patch for redirecting imports to sktime.libs.uni2ts
     if _check_soft_dependencies(["lightning", "huggingface-hub"], severity="none"):
@@ -517,7 +586,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             effective_target_dim,
         )
 
-    def _predict(self, fh, y=None, X=None):
+    def _predict(self, fh, X=None):
         if self.deterministic:
             import torch
 
@@ -541,28 +610,17 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
         if self._X is not None:
             _X = self._X.copy()
 
-        # Zero shot case with X and fit data as context
-        _use_fit_data_as_context = False
-        if X is not None and y is None:
-            _use_fit_data_as_context = True
-
-        # Override to data in fit as new timeseries is passed
-        elif y is not None:
-            _y = y.copy()
-            if X is not None:
-                _X = X.copy()
+        # Use X at predict time to extend the time index with future timestamps
+        _use_fit_data_as_context = X is not None
 
         if isinstance(_y, pd.Series):
-            target = [_y.name]
+            target_name = [_y.name]
             _y, _is_converted_to_df = self._series_to_df(_y)
         else:
-            target = _y.columns
+            target_name = list(_y.columns)
 
-        # Store the original index and target name
-        self._target_name = target
-        self._len_of_targets = len(target)
-
-        target = [f"target_{i}" for i in range(self._len_of_targets)]
+        len_of_targets = len(target_name)
+        target = [f"target_{i}" for i in range(len_of_targets)]
         _y.columns = target
 
         future_length = 0
@@ -575,8 +633,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             _X.columns = feat_dynamic_real
 
         pred_df = pd.concat([_y, _X], axis=1)
-        self._is_range_index = self.check_range_index(pred_df)
-        self._is_period_index = self.check_period_index(pred_df)
+        is_range_index = self.check_range_index(pred_df)
 
         if _use_fit_data_as_context:
             future_length = self._get_future_length(X)
@@ -632,7 +689,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             pred_df.index.freq = None
 
         # Check if the index is a range index
-        if self._is_range_index:
+        if is_range_index:
             pred_df.index = self.handle_range_index(pred_df.index)
 
         _is_hierarchical = False
@@ -641,7 +698,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             _is_hierarchical = True
 
         ds_test, df_config = self.create_pandas_dataset(
-            pred_df, target, feat_dynamic_real, future_length
+            pred_df, target, feat_dynamic_real, future_length, target_name=target_name
         )
 
         with self.model_.hparams_context(prediction_length=int(max(fh._values))):
@@ -666,7 +723,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
 
         pred_out = fh.get_expected_pred_idx(_y, cutoff=self.cutoff)
 
-        if self._is_range_index:
+        if is_range_index:
             timepoints = self.return_time_index(predictions)
             timepoints = timepoints.to_timestamp()
             timepoints = (timepoints - pd.Timestamp("2010-01-01")).map(
@@ -688,7 +745,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
         predictions.index = pred_out
         return predictions
 
-    def _predict_quantiles(self, fh, X=None, alpha=None, y=None):
+    def _predict_quantiles(self, fh, X=None, alpha=None):
         """Compute quantile forecasts.
 
         Parameters
@@ -699,8 +756,6 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             Exogenous time series.
         alpha : list of float, optional (default=None)
             The quantiles to predict. If None, uses default [0.1, 0.25, 0.5, 0.75, 0.9].
-        y : pd.DataFrame, optional (default=None)
-            Historical values of the time series for global forecasting.
 
         Returns
         -------
@@ -733,24 +788,16 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
         if self._X is not None:
             _X = self._X.copy()
 
-        _use_fit_data_as_context = False
-        if X is not None and y is None:
-            _use_fit_data_as_context = True
-        elif y is not None:
-            _y = y.copy()
-            if X is not None:
-                _X = X.copy()
+        _use_fit_data_as_context = X is not None
 
         if isinstance(_y, pd.Series):
-            target = [_y.name]
+            target_name = [_y.name]
             _y, _is_converted_to_df = self._series_to_df(_y)
         else:
-            target = _y.columns
+            target_name = list(_y.columns)
 
-        self._target_name = target
-        self._len_of_targets = len(target)
-
-        target = [f"target_{i}" for i in range(self._len_of_targets)]
+        len_of_targets = len(target_name)
+        target = [f"target_{i}" for i in range(len_of_targets)]
         _y.columns = target
 
         future_length = 0
@@ -793,8 +840,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
                                     feat_dynamic_real
                                 ].ffill()
 
-        self._is_range_index = self.check_range_index(pred_df)
-        self._is_period_index = self.check_period_index(pred_df)
+        is_range_index = self.check_range_index(pred_df)
 
         if _use_fit_data_as_context:
             future_length = self._get_future_length(X)
@@ -856,7 +902,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             pred_df.index = time_idx.to_timestamp()
             pred_df.index.freq = None
 
-        if self._is_range_index:
+        if is_range_index:
             pred_df.index = self.handle_range_index(pred_df.index)
 
         _is_hierarchical = False
@@ -865,7 +911,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             _is_hierarchical = True
 
         ds_test, df_config = self.create_pandas_dataset(
-            pred_df, target, feat_dynamic_real, future_length
+            pred_df, target, feat_dynamic_real, future_length, target_name=target_name
         )
 
         with self.model_.hparams_context(prediction_length=int(max(fh._values))):
@@ -886,9 +932,8 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
                         # Multivariate: shape (prediction_length, n_targets)
                         for col_idx in range(q_result.shape[1]):
                             col_name = (
-                                self._target_name[col_idx]
-                                if self._target_name is not None
-                                and col_idx < len(self._target_name)
+                                target_name[col_idx]
+                                if col_idx < len(target_name)
                                 else col_idx
                             )
                             if col_name is None:
@@ -915,12 +960,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
                                 quantile_dfs.append(df)
                     else:
                         # Univariate
-                        col_name = (
-                            self._target_name[0]
-                            if self._target_name is not None
-                            and len(self._target_name) > 0
-                            else 0
-                        )
+                        col_name = target_name[0] if len(target_name) > 0 else 0
                         if col_name is None:
                             col_name = 0
 
@@ -997,7 +1037,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
 
             pred_out = fh.get_expected_pred_idx(_y, cutoff=self.cutoff)
 
-            if self._is_range_index:
+            if is_range_index:
                 timepoints = self.return_time_index(result)
                 timepoints = timepoints.to_timestamp()
                 timepoints = (timepoints - pd.Timestamp("2010-01-01")).map(
@@ -1121,7 +1161,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             return handle_panel_predictions(forecasts, df_config)
 
     def create_pandas_dataset(
-        self, df, target, dynamic_features=None, forecast_horizon=0
+        self, df, target, dynamic_features=None, forecast_horizon=0, target_name=None
     ):
         """Create a gluonts PandasDataset from the input data.
 
@@ -1135,6 +1175,10 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
             List of dynamic features.
         forecast_horizon : int, default=0
             Forecast horizon.
+        target_name : list, optional
+            Original target column names (before internal renaming to
+            ``target_0``, ``target_1``, ...). Stored in ``df_config`` for
+            use by downstream helpers that need to reconstruct output columns.
 
         Returns
         -------
@@ -1149,7 +1193,7 @@ class MOIRAIForecaster(_BaseGlobalForecaster):
 
         # Add original target to config
         df_config = {
-            "target": self._target_name,
+            "target": target_name,
         }
 
         # PandasDataset expects non-multiindex dataframe with item_id
